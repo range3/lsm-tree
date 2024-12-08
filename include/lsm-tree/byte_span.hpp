@@ -2,9 +2,11 @@
 
 #include <concepts>
 #include <cstddef>
+#include <iostream>
 #include <iterator>
 #include <ranges>
 #include <span>
+#include <type_traits>
 
 namespace lsm::utils {
 
@@ -41,6 +43,14 @@ concept NonByteRange = requires {
   requires !Byte<std::ranges::range_value_t<Range>>;
   requires std::is_trivially_copyable_v<std::ranges::range_value_t<Range>>;
 };
+
+template <typename Range, typename ElementType>
+concept ConstSafeRange =
+    std::is_const_v<ElementType>
+    || ((!std::is_const_v<
+            std::remove_reference_t<std::ranges::range_value_t<Range>>>)
+        && (!std::is_const_v<std::remove_reference_t<Range>>)
+        && std::ranges::borrowed_range<Range>);
 
 }  // namespace detail
 
@@ -121,15 +131,40 @@ class basic_byte_span {
 
   // iterator and sentinel is not provided
 
+  // // Constructor from array - implicit conversion allowed
+  // template <size_t ArrayExtent>
+  //   requires(Extent == std::dynamic_extent || ArrayExtent == Extent)
+  // // NOLINTNEXTLINE
+  // constexpr basic_byte_span(
+  //     // NOLINTNEXTLINE
+  //     std::type_identity_t<element_type> (&arr)[ArrayExtent]) noexcept
+  //     : basic_byte_span(reinterpret_cast<pointer>(arr), ArrayExtent) {
+  //   std::cout << "ArrayExtent: " << ArrayExtent << '\n';
+  // }
+  // From raw array (byte types) - implicit conversion allowed
+  template <detail::Byte OtherB, size_t ArrayExtent>
+    requires((Extent == std::dynamic_extent || ArrayExtent == Extent)
+             && (!std::is_const_v<OtherB> || std::is_const_v<element_type>))
+  // NOLINTNEXTLINE
+  constexpr basic_byte_span(OtherB (&arr)[ArrayExtent]) noexcept
+      : span_(reinterpret_cast<pointer>(arr), ArrayExtent) {
+    std::cout << "ArrayExtent: " << ArrayExtent << '\n';
+  }
+
+  // From raw array (non-byte types) - explicit conversion required
+  // template <typename T, size_t ArrayExtent>
+  //   requires(!detail::Byte<std::remove_cv_t<T>>
+  //            && std::is_trivially_copyable_v<T>
+  //            && (Extent == std::dynamic_extent
+  //                || ArrayExtent * sizeof(T) == Extent)
+  //            && (!std::is_const_v<T> || std::is_const_v<element_type>))
+  // constexpr explicit basic_byte_span(T (&arr)[ArrayExtent]) noexcept
+  //     : span_(reinterpret_cast<pointer>(arr), ArrayExtent * sizeof(T)) {}
+
   // From ranges (byte types) - implicit conversion allowed
   template <detail::ByteRange Range>
-    requires(!std::is_const_v<
-                 std::remove_reference_t<std::ranges::range_value_t<Range>>>
-             || std::is_const_v<element_type>)
-         && (!std::is_const_v<std::remove_reference_t<Range>>
-             || std::is_const_v<element_type>)
-         && (std::ranges::borrowed_range<Range>
-             || std::is_const_v<element_type>)
+    requires detail::ConstSafeRange<Range, element_type>
+          && (!std::is_array_v<std::remove_cvref_t<Range>>)
   constexpr explicit(Extent != std::dynamic_extent)
       // NOLINTNEXTLINE
       basic_byte_span(Range&& range) noexcept
@@ -141,13 +176,8 @@ class basic_byte_span {
 
   // From ranges (non-byte types) - explicit conversion required
   template <detail::NonByteRange Range>
-    requires(!std::is_const_v<
-                 std::remove_reference_t<std::ranges::range_value_t<Range>>>
-             || std::is_const_v<element_type>)
-         && (!std::is_const_v<std::remove_reference_t<Range>>
-             || std::is_const_v<element_type>)
-         && (std::ranges::borrowed_range<Range>
-             || std::is_const_v<element_type>)
+    requires detail::ConstSafeRange<Range, element_type>
+          && (!std::is_array_v<std::remove_cvref_t<Range>>)
   // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
   constexpr explicit basic_byte_span(Range&& range) noexcept
       : basic_byte_span(std::ranges::data(range), std::ranges::size(range)) {
@@ -168,7 +198,18 @@ class basic_byte_span {
   span_type span_;
 };
 
-using byte_span = basic_byte_span<std::byte>;
-using cbyte_span = basic_byte_span<const std::byte>;
+// Deduction guides
+template <detail::Byte B, size_t ArrayExtent>
+// NOLINTNEXTLINE
+basic_byte_span(B (&)[ArrayExtent]) -> basic_byte_span<B, ArrayExtent>;
+
+template <std::size_t Extent = std::dynamic_extent>
+using byte_span = basic_byte_span<std::byte, Extent>;
+
+template <std::size_t Extent = std::dynamic_extent>
+using cbyte_span = basic_byte_span<const std::byte, Extent>;
+
+using byte_view = byte_span<>;
+using cbyte_view = cbyte_span<>;
 
 }  // namespace lsm::utils
